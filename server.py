@@ -5,10 +5,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
+EXCLUDED_FILES = {"package.json", "tsconfig.json", "MITIGATION.json", "TECHNIQUES.json"}
 
 def parse_flexible_json_objects(raw_text, source_name):
     events = []
-    # Clean markdown list bullets ("- {") and broken opening lines ('- "ts":')
     cleaned = re.sub(r'(?m)^\s*-\s+(?=\{)', '', raw_text)
     cleaned = re.sub(r'(?m)^\s*-?\s*"ts"\s*:', '{"ts":', cleaned)
 
@@ -27,7 +27,6 @@ def parse_flexible_json_objects(raw_text, source_name):
                 events.append(obj)
             idx = end_idx
         except json.JSONDecodeError:
-            # Handle literal newlines inside JSON strings on that block
             line_end = cleaned.find("\n{", next_brace + 1)
             chunk = cleaned[next_brace:] if line_end == -1 else cleaned[next_brace:line_end]
             repaired = re.sub(r'\r?\n\s*-?\s*', r'\\n', chunk).strip()
@@ -54,7 +53,7 @@ def load_all_json_logs():
     for filepath in candidates:
         if not filepath.is_file() or filepath.resolve() in seen_files:
             continue
-        if filepath.name in {"package.json", "tsconfig.json"}:
+        if filepath.name in EXCLUDED_FILES:
             continue
         seen_files.add(filepath.resolve())
 
@@ -77,24 +76,39 @@ def load_all_json_logs():
 
     return events
 
+def load_json_file(filename):
+    target = BASE_DIR / filename
+    if target.exists():
+        try:
+            return json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    return {}
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(BASE_DIR), **kwargs)
 
+    def send_json(self, data):
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         if self.path == "/api/logs":
-            payload = json.dumps(load_all_json_logs(), ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(payload)
-            return
+            return self.send_json(load_all_json_logs())
+        if self.path == "/api/mitigation":
+            return self.send_json(load_json_file("MITIGATION.json"))
+        if self.path == "/api/techniques":
+            return self.send_json(load_json_file("TECHNIQUES.json"))
         if self.path == "/":
             self.path = "/index.html"
         return super().do_GET()
 
 if __name__ == "__main__":
     port = 8080
-    print(f"🚀 Wikipedia Security Report running at: http://127.0.0.1:{port}", flush=True)
+    print(f"Wikipedia Security Report running at: http://127.0.0.1:{port}", flush=True)
     HTTPServer(("0.0.0.0", port), DashboardHandler).serve_forever()
